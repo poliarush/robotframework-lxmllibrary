@@ -26,7 +26,7 @@ from robot.version import get_version
 
 should_be_equal = asserts.assert_equals
 should_match = BuiltIn().should_match
-
+should_match_regexp = BuiltIn().should_match_regexp
 
 class XML(object):
     """Robot Framework test library for verifying and modifying XML documents.
@@ -399,11 +399,12 @@ class XML(object):
         return root
 
     def _strip_namespaces(self, elem, current_ns=None):
-        if elem.tag.startswith('{') and '}' in elem.tag:
-            ns, elem.tag = elem.tag[1:].split('}', 1)
-            if ns != current_ns:
-                elem.set('xmlns', ns)
-                current_ns = ns
+        if isinstance(elem.tag, basestring): #fix to miss comments in xml
+            if elem.tag.startswith('{') and '}' in elem.tag:
+                ns, elem.tag = elem.tag[1:].split('}', 1)
+                if ns != current_ns:
+                    elem.set('xmlns', ns)
+                    current_ns = ns
         for child in elem:
             self._strip_namespaces(child, current_ns)
 
@@ -443,7 +444,7 @@ class XML(object):
         if count == 1:
             return "One element matching '%s' found." % xpath
         return "Multiple elements (%d) matching '%s' found." % (count, xpath)
-
+ 
     def get_elements(self, source, xpath):
         """Returns a list of elements in the `source` matching the `xpath`.
 
@@ -522,6 +523,22 @@ class XML(object):
         if not count:
             self._raise_wrong_number_of_matches(count, xpath, message)
 
+    def elements_count_should_be_equal(self, source, count, xpath='.', message=None):
+        """Verifies that elements match the given `xpath` and assert elements count.
+
+        Arguments `source` and `xpath` have exactly the same semantics as with
+        `Get Elements` keyword. Keyword passes if the `xpath` matches exact
+        amount of items waiting in `source`. The default error message can be
+        overridden with the `message` argument.
+
+        See also `Element Should Not Exist` as well as `Get Element Count`
+        that this keyword uses internally.
+        """
+        actual = self.get_element_count(source, xpath)
+        if not actual or actual != int(count):
+            self._raise_wrong_number_of_matches(actual, xpath, message)
+
+
     def element_should_not_exist(self, source, xpath='.', message=None):
         """Verifies that no element match the given `xpath`.
 
@@ -589,7 +606,7 @@ class XML(object):
     def _normalize_whitespace(self, text):
         return self._whitespace.sub(' ', text.strip())
 
-    def get_elements_texts(self, source, xpath, normalize_whitespace=False):
+    def get_elements_texts(self, source, xpath, normalize_whitespace=False, raise_exception=True):
         """Returns text of all elements matching `xpath` as a list.
 
         The elements whose text to return is specified using `source` and
@@ -606,8 +623,15 @@ class XML(object):
         | Should Be Equal  | @{texts}[0]        | more text |             |
         | Should Be Equal  | @{texts}[1]        | ${EMPTY}  |             |
         """
-        return [self.get_element_text(elem, normalize_whitespace=normalize_whitespace)
+        texts = [self.get_element_text(elem, normalize_whitespace=normalize_whitespace)
                 for elem in self.get_elements(source, xpath)]
+        if texts:
+            return texts
+        else:
+            if raise_exception:
+                raise AssertionError("No matching elements found by passed xpath %s" % xpath)
+            else:
+                return []
 
     def element_text_should_be(self, source, expected, xpath='.',
                                normalize_whitespace=False, message=None):
@@ -635,6 +659,33 @@ class XML(object):
         text = self.get_element_text(source, xpath, normalize_whitespace)
         should_be_equal(text, expected, message, values=False)
 
+    def elements_text_should_be(self, source, expected, xpath='.',
+                               normalize_whitespace=False, message=None, raise_exception=True):
+        """Verifies that the text of the specified element is `expected`.
+
+        The element whose text is verified is specified using `source` and
+        `xpath`. They have exactly the same semantics as with `Get Element`
+        keyword.
+
+        The text to verify is got from the specified element using the same
+        logic as with `Get Element Text`. This includes optional whitespace
+        normalization using the `normalize_whitespace` option.
+
+        The keyword passes if the text of the element is equal to the
+        `expected` value, and otherwise it fails. The default error message can
+        be overridden with the `message` argument.  Use `Element Text Should
+        Match` to verify the text against a pattern instead of an exact value.
+
+        Examples using `${XML}` structure from the `introduction`:
+        | Elements Text Should Be | ${XML}       | text     | xpath=first      |
+        | Elements Text Should Be | ${XML}       | ${EMPTY} | xpath=second/child |
+        | ${paragraph} =         | Get Element  | ${XML}   | xpath=html/p     |
+        | Elements Text Should Be | ${paragraph} | Text with bold and italics. | normalize_whitespace=yes |
+        """
+        for text in self.get_elements_texts(source, xpath, normalize_whitespace, raise_exception):
+            should_be_equal(text, expected, message, values=False)
+
+
     def element_text_should_match(self, source, pattern, xpath='.',
                                   normalize_whitespace=False, message=None):
         """Verifies that the text of the specified element matches `expected`.
@@ -654,6 +705,67 @@ class XML(object):
         """
         text = self.get_element_text(source, xpath, normalize_whitespace)
         should_match(text, pattern, message, values=False)
+
+    def elements_text_should_match(self, source, pattern, xpath='.',
+                                  normalize_whitespace=False, message=None, raise_exception=True):
+        """Verifies that the text of the specified element matches `expected`.
+
+        This keyword works exactly like `Element Text Should Be` except that
+        the expected value can be given as a pattern that the text of the
+        element must match.
+
+        Pattern matching is similar as matching files in a shell, and it is
+        always case-sensitive. In the pattern, '*' matches anything and '?'
+        matches any single character.
+
+        Examples using `${XML}` structure from the `introduction`:
+        | Elements Text Should Match | ${XML}       | t???   | xpath=first  |
+        | ${paragraph} =            | Get Element  | ${XML} | xpath=html/p |
+        | Elements Text Should Match | ${paragraph} | Text with * and *. | normalize_whitespace=yes |
+        """
+        for text in self.get_elements_texts(source, xpath, normalize_whitespace, raise_exception):
+            should_match(text, pattern, message, values=False)
+
+
+    def element_text_should_match_regexp(self, source, pattern, xpath='.',
+                                  normalize_whitespace=False, message=None):
+        """Verifies that the text of the specified element matches `expected` 
+        with regular expression provided.
+
+        This keyword works exactly like `Element Text Should Match` except that
+        the expected value can be given as a regexp pattern that the text of the
+        element must match.
+
+        Please have a look to regular expression to make pattern 
+        http://en.wikipedia.org/wiki/Regular_expression
+
+        Examples using `${XML}` structure from the `introduction`:
+        | Elements Text Should Match Regexp | ${XML}       | .*   | xpath=first  |
+        | ${paragraph} =            | Get Element  | ${XML} | xpath=html/p |
+        | Elements Text Should Match | ${paragraph} | Text with \d+ and \w? | normalize_whitespace=yes |
+        """
+        text = self.get_element_text(source, xpath, normalize_whitespace)
+        should_match_regexp(text, pattern, message, values=False)  
+
+    def elements_text_should_match_regexp(self, source, pattern, xpath='.',
+                                  normalize_whitespace=False, message=None, raise_exception=True):
+        """Verifies that the text of the specified elements match `expected` 
+        with regular expression provided.
+
+        This keyword works exactly like `Elements Text Should Match` except that
+        the expected value can be given as a regexp pattern that the text of the
+        element must match.
+
+        Please have a look to regular expression to make pattern 
+        http://en.wikipedia.org/wiki/Regular_expression
+
+        Examples using `${XML}` structure from the `introduction`:
+        | Elements Text Should Match Regexp | ${XML}       | .*   | xpath=first  |
+        | ${paragraph} =            | Get Element  | ${XML} | xpath=html/p |
+        | Elements Text Should Match | ${paragraph} | Text with \d+ and \w? | normalize_whitespace=yes |
+        """
+        for text in self.get_elements_texts(source, xpath, normalize_whitespace, raise_exception):
+            should_match_regexp(text, pattern, message, values=False)            
 
     def get_element_attribute(self, source, name, xpath='.', default=None):
         """Returns the named attribute of the specified element.
@@ -1240,7 +1352,8 @@ class XML(object):
         New in Robot Framework 2.7.5.
         """
         tree = ET.ElementTree(self.get_element(source))
-        kwargs = {'xml_declaration': True} if ET.VERSION >= '1.3' else {}
+        # kwargs = {'xml_declaration': True} if ET.VERSION >= '1.3' else {}
+        kwargs = {}
         # Need to explicitly open/close files because older ET versions don't
         # close files they open and Jython/IPY don't close them implicitly.
         with open(path, 'w') as output:
